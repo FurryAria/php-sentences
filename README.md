@@ -2,7 +2,41 @@
 
 一言开源社区官方提供的语句库，系 `hitokoto.cn` 数据打包集合。语句接口默认使用此库。
 
-## 使用方法
+## API调用文档
+
+### 请求接口
+`GET /api.php`
+
+### 请求参数
+| 参数 | 说明 | 可选值 | 默认值 |
+|------|------|--------|--------|
+| c | 句子分类筛选 | a(动画), b(漫画), c(游戏), d(文学), e(原创), f(网络), g(其他), h(影视), i(诗词), j(网易云), k(哲学), l(抖机灵) | 随机 |
+| custom | 自定义字段 | 任意字符串 | 无 |
+
+### 响应格式
+```json
+{
+  "id": 123,
+  "hitokoto": "句子内容",
+  "from": "出处",
+  "type": "分类代码",
+  "category_code": "a",
+  "category_name": "动画",
+  "custom_field": "自定义内容" // 当传递custom参数时出现
+}
+```
+
+### 使用示例
+1. 获取随机句子：
+`GET /api.php`
+
+2. 获取动画分类句子：
+`GET /api.php?c=a`
+
+3. 添加自定义字段：
+`GET /api.php?c=a&custom=myfield`
+
+## 句子包使用方法
 
 参考： <https://sentences-bundle.hitokoto.cn>
 

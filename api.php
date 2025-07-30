@@ -10,8 +10,21 @@ try {
     $pdo = new PDO($dsn, $config['username'], $config['password']);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-    // 随机获取一条句子
-    $stmt = $pdo->query('SELECT id, hitokoto, `from`, type FROM sentences ORDER BY RAND() LIMIT 1');
+    // 构建查询
+    $sql = "SELECT s.id, s.hitokoto, s.`from`, s.type, c.code as category_code, c.name as category_name 
+            FROM sentences s
+            JOIN categories c ON s.category_id = c.id";
+    $params = [];
+
+    // 分类筛选
+    if (!empty($_GET['c'])) {
+        $sql .= " WHERE c.code = :code";
+        $params[':code'] = $_GET['c'];
+    }
+
+    $sql .= " ORDER BY RAND() LIMIT 1";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     $randomSentence = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$randomSentence) {
@@ -25,8 +38,15 @@ try {
         'id' => $randomSentence['id'],
         'hitokoto' => $randomSentence['hitokoto'],
         'from' => $randomSentence['from'] ?? '未知来源',
-        'type' => $randomSentence['type']
+        'type' => $randomSentence['type'],
+        'category_code' => $randomSentence['category_code'],
+        'category_name' => $randomSentence['category_name']
     ];
+
+    // 添加自定义字段
+    if (!empty($_GET['custom'])) {
+        $response['custom_field'] = $_GET['custom'];
+    }
 
     echo json_encode($response, JSON_UNESCAPED_UNICODE);
 } catch (PDOException $e) {

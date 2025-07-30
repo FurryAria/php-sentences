@@ -31,13 +31,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // 创建数据库（如果不存在）
         $pdo->exec("CREATE DATABASE IF NOT EXISTS {$dbname}");
         $pdo->exec("USE {$dbname}");
-        
+
+        // 创建分类表
+        $pdo->exec("CREATE TABLE IF NOT EXISTS categories (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            code VARCHAR(10) NOT NULL UNIQUE,
+            name VARCHAR(50) NOT NULL,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
+        // 插入默认分类数据
+        $pdo->exec("INSERT IGNORE INTO categories (code, name, description) VALUES
+            ('a', '动画', '动画相关的句子'),
+            ('b', '漫画', '漫画相关的句子'),
+            ('c', '游戏', '游戏相关的句子'),
+            ('d', '文学', '文学作品中的句子'),
+            ('e', '原创', '原创句子'),
+            ('f', '来自网络', '网络上的句子'),
+            ('g', '其他', '其他类型的句子'),
+            ('h', '影视', '影视作品中的句子'),
+            ('i', '诗词', '诗词相关的句子'),
+            ('j', '网易云', '网易云音乐相关的句子'),
+            ('k', '哲学', '哲学相关的句子'),
+            ('l', '抖机灵', '幽默或机智的句子');");
+
         // 创建表结构（优化版）
         $sql = "CREATE TABLE IF NOT EXISTS sentences (
             id INT PRIMARY KEY AUTO_INCREMENT,
             uuid VARCHAR(36) NOT NULL UNIQUE,
             hitokoto TEXT NOT NULL,
-            type VARCHAR(10) NOT NULL,
+            category_id INT NOT NULL,
             `from` VARCHAR(50),
             from_who VARCHAR(50),
             creator VARCHAR(50),
@@ -47,7 +71,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             created_at DATETIME,
             length INT,
             UNIQUE KEY idx_uuid (uuid),
-            INDEX idx_type (type)
+            INDEX idx_category_id (category_id),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
         $pdo->exec($sql);
         
@@ -89,13 +114,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 continue;
             }
             
+            $batchSize = 100; // 批量插入大小
+            $batchData = [];
+            $pdo->beginTransaction();
+
             foreach ($sentences as $sentence) {
                 // 检查是否已存在该uuid
                 $stmt = $pdo->prepare("SELECT id FROM sentences WHERE uuid = :uuid");
                 $stmt->execute([':uuid' => $sentence['uuid']]);
                 if ($stmt->fetch()) {
                     $skipped++;
-                    
+
                     // 更新进度
                     $current = $imported + $skipped;
                     $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
@@ -104,38 +133,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flush();
                     continue;
                 }
-                
-                // 插入数据
-                $stmt = $pdo->prepare("INSERT INTO sentences (
-                    uuid, hitokoto, type, `from`, from_who, creator, creator_uid,
-                    reviewer, commit_from, created_at, length
-                ) VALUES (
-                    :uuid, :hitokoto, :type, :from, :from_who, :creator, :creator_uid,
-                    :reviewer, :commit_from, :created_at, :length
-                )");
-                
-                $stmt->execute([
-                    ':uuid' => $sentence['uuid'],
-                    ':hitokoto' => $sentence['hitokoto'],
-                    ':type' => $sentence['type'],
-                    ':from' => $sentence['from'] ?? null,
-                    ':from_who' => $sentence['from_who'] ?? null,
-                    ':creator' => $sentence['creator'] ?? null,
-                    ':creator_uid' => $sentence['creator_uid'] ?? 0,
-                    ':reviewer' => $sentence['reviewer'] ?? 0,
-                    ':commit_from' => $sentence['commit_from'] ?? null,
-                    ':created_at' => ($sentence['created_at'] && is_numeric($sentence['created_at']) && $sentence['created_at'] > 0 && $sentence['created_at'] < 2147483647) ? date('Y-m-d H:i:s', $sentence['created_at']) : '1970-01-01 00:00:00',
-                    ':length' => $sentence['length'] ?? 0
-                ]);
-                
-                $imported++;
-                    
+
+                // 获取分类ID
+                $stmt = $pdo->prepare("SELECT id FROM categories WHERE code = :code");
+                $stmt->execute([':code' => $sentence['type']]);
+                $category = $stmt->fetch();
+                $categoryId = $category ? $category['id'] : 7; // 默认分类为'其他'
+
+                // 添加到批量数据
+                $batchData[] = [
+                    'uuid' => $sentence['uuid'],
+                    'hitokoto' => $sentence['hitokoto'],
+                    'category_id' => $categoryId,
+                    'from' => $sentence['from'] ?? null,
+                    'from_who' => $sentence['from_who'] ?? null,
+                    'creator' => $sentence['creator'] ?? null,
+                    'creator_uid' => $sentence['creator_uid'] ?? 0,
+                    'reviewer' => $sentence['reviewer'] ?? 0,
+                    'commit_from' => $sentence['commit_from'] ?? null,
+                    'created_at' => ($sentence['created_at'] && is_numeric($sentence['created_at']) && $sentence['created_at'] > 0 && $sentence['created_at'] < 2147483647) ? date('Y-m-d H:i:s', $sentence['created_at']) : '1970-01-01 00:00:00',
+                    'length' => $sentence['length'] ?? 0
+                ];
+
+                // 达到批量大小则执行插入
+                if (count($batchData) >= $batchSize) {
+                    $values = [];
+                    $params = [];
+                    foreach ($batchData as $i => $data) {
+                        $values[] = "(:uuid{$i}, :hitokoto{$i}, :category_id{$i}, :from{$i}, :from_who{$i}, :creator{$i}, :creator_uid{$i}, :reviewer{$i}, :commit_from{$i}, :created_at{$i}, :length{$i})";
+                        foreach ($data as $key => $value) {
+                            $params[":{$key}{$i}"] = $value;
+                        }
+                    }
+
+                    $stmt = $pdo->prepare("INSERT INTO sentences (
+                        uuid, hitokoto, category_id, `from`, from_who, creator, creator_uid,
+                        reviewer, commit_from, created_at, length
+                    ) VALUES " . implode(', ', $values));
+                    $stmt->execute($params);
+
+                    $imported += count($batchData);
+                    $batchData = [];
+                    $pdo->commit();
+                    $pdo->beginTransaction();
+
                     // 更新进度
                     $current = $imported + $skipped;
                     $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
                     echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)');</script>";
                     ob_flush();
                     flush();
+                }
+            }
+
+            // 处理剩余数据
+            if (!empty($batchData)) {
+                $values = [];
+                $params = [];
+                foreach ($batchData as $i => $data) {
+                    $values[] = "(:uuid{$i}, :hitokoto{$i}, :category_id{$i}, :from{$i}, :from_who{$i}, :creator{$i}, :creator_uid{$i}, :reviewer{$i}, :commit_from{$i}, :created_at{$i}, :length{$i})";
+                    foreach ($data as $key => $value) {
+                        $params[":{$key}{$i}"] = $value;
+                    }
+                }
+
+                $stmt = $pdo->prepare("INSERT INTO sentences (
+                    uuid, hitokoto, category_id, `from`, from_who, creator, creator_uid,
+                    reviewer, commit_from, created_at, length
+                ) VALUES " . implode(', ', $values));
+                $stmt->execute($params);
+
+                $imported += count($batchData);
+                $batchData = [];
+            }
+
+            $pdo->commit();
             }
         }
         
