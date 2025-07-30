@@ -11,7 +11,7 @@ try {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     // 构建查询
-    $sql = "SELECT s.id, s.hitokoto, s.`from`, s.type, c.code as category_code, c.name as category_name 
+    $sql = "SELECT s.id, s.hitokoto, s.`from`, c.code as category_code, c.name as category_name 
             FROM sentences s
             JOIN categories c ON s.category_id = c.id";
     $params = [];
@@ -38,14 +38,21 @@ try {
         'id' => $randomSentence['id'],
         'hitokoto' => $randomSentence['hitokoto'],
         'from' => $randomSentence['from'] ?? '未知来源',
-        'type' => $randomSentence['type'],
         'category_code' => $randomSentence['category_code'],
         'category_name' => $randomSentence['category_name']
     ];
 
-    // 添加自定义字段
-    if (!empty($_GET['custom'])) {
-        $response['custom_field'] = $_GET['custom'];
+    // 预定义自定义字段（在代码中声明）
+    // 可以根据需要修改或添加更多自定义字段
+    $customFields = [
+        'author' => '一言API',
+        'version' => '1.0',
+        'source' => '本地数据库'
+    ];
+
+    // 将自定义字段添加到响应中
+    foreach ($customFields as $key => $value) {
+        $response[$key] = $value;
     }
 
     echo json_encode($response, JSON_UNESCAPED_UNICODE);

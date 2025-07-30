@@ -80,6 +80,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sentenceFiles = glob(__DIR__ . '/sentences/*.json');
         $imported = 0;
         $skipped = 0;
+        $batchSize = 100; // 每批处理100条记录
+        $currentBatch = 0;
         
         // 计算总句子数
         $totalSentences = 0;
@@ -105,6 +107,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ob_flush();
         flush();
         
+        // 预处理语句，提高性能
+        $checkStmt = $pdo->prepare("SELECT id FROM sentences WHERE uuid = :uuid");
+        $categoryStmt = $pdo->prepare("SELECT id FROM categories WHERE code = :code");
+        $insertStmt = $pdo->prepare("INSERT INTO sentences (
+            uuid, hitokoto, category_id, `from`, from_who, creator, creator_uid,
+            reviewer, commit_from, created_at, length
+        ) VALUES (
+            :uuid, :hitokoto, :category_id, :from, :from_who, :creator, :creator_uid,
+            :reviewer, :commit_from, :created_at, :length
+        )");
+
         foreach ($sentenceFiles as $file) {
             $jsonContent = file_get_contents($file);
             $sentences = json_decode($jsonContent, true);
@@ -114,100 +127,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 continue;
             }
             
-            $batchSize = 100; // 批量插入大小
-            $batchData = [];
-            $pdo->beginTransaction();
-
-            foreach ($sentences as $sentence) {
-                // 检查是否已存在该uuid
-                $stmt = $pdo->prepare("SELECT id FROM sentences WHERE uuid = :uuid");
-                $stmt->execute([':uuid' => $sentence['uuid']]);
-                if ($stmt->fetch()) {
-                    $skipped++;
-
-                    // 更新进度
-                    $current = $imported + $skipped;
-                    $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
-                    echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)');</script>";
-                    ob_flush();
-                    flush();
-                    continue;
-                }
-
-                // 获取分类ID
-                $stmt = $pdo->prepare("SELECT id FROM categories WHERE code = :code");
-                $stmt->execute([':code' => $sentence['type']]);
-                $category = $stmt->fetch();
-                $categoryId = $category ? $category['id'] : 7; // 默认分类为'其他'
-
-                // 添加到批量数据
-                $batchData[] = [
-                    'uuid' => $sentence['uuid'],
-                    'hitokoto' => $sentence['hitokoto'],
-                    'category_id' => $categoryId,
-                    'from' => $sentence['from'] ?? null,
-                    'from_who' => $sentence['from_who'] ?? null,
-                    'creator' => $sentence['creator'] ?? null,
-                    'creator_uid' => $sentence['creator_uid'] ?? 0,
-                    'reviewer' => $sentence['reviewer'] ?? 0,
-                    'commit_from' => $sentence['commit_from'] ?? null,
-                    'created_at' => ($sentence['created_at'] && is_numeric($sentence['created_at']) && $sentence['created_at'] > 0 && $sentence['created_at'] < 2147483647) ? date('Y-m-d H:i:s', $sentence['created_at']) : '1970-01-01 00:00:00',
-                    'length' => $sentence['length'] ?? 0
-                ];
-
-                // 达到批量大小则执行插入
-                if (count($batchData) >= $batchSize) {
-                    $values = [];
-                    $params = [];
-                    foreach ($batchData as $i => $data) {
-                        $values[] = "(:uuid{$i}, :hitokoto{$i}, :category_id{$i}, :from{$i}, :from_who{$i}, :creator{$i}, :creator_uid{$i}, :reviewer{$i}, :commit_from{$i}, :created_at{$i}, :length{$i})";
-                        foreach ($data as $key => $value) {
-                            $params[":{$key}{$i}"] = $value;
-                        }
+            // 分批处理句子
+            $batchSentences = array_chunk($sentences, $batchSize);
+            foreach ($batchSentences as $batch) {
+                $currentBatch++;
+                
+                foreach ($batch as $sentence) {
+                    // 检查是否已存在该uuid
+                    $checkStmt->execute([':uuid' => $sentence['uuid']]);
+                    if ($checkStmt->fetch()) {
+                        $skipped++;
+                        continue;
                     }
+                    
+                    // 获取分类ID
+                    $categoryStmt->execute([':code' => $sentence['type']]);
+                    $category = $categoryStmt->fetch();
+                    $categoryId = $category ? $category['id'] : 7; // 默认分类为'其他'
 
-                    $stmt = $pdo->prepare("INSERT INTO sentences (
-                        uuid, hitokoto, category_id, `from`, from_who, creator, creator_uid,
-                        reviewer, commit_from, created_at, length
-                    ) VALUES " . implode(', ', $values));
-                    $stmt->execute($params);
-
-                    $imported += count($batchData);
-                    $batchData = [];
-                    $pdo->commit();
-                    $pdo->beginTransaction();
-
-                    // 更新进度
-                    $current = $imported + $skipped;
-                    $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
-                    echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)');</script>";
-                    ob_flush();
-                    flush();
+                    $insertStmt->execute([
+                        ':uuid' => $sentence['uuid'],
+                        ':hitokoto' => $sentence['hitokoto'],
+                        ':category_id' => $categoryId,
+                        ':from' => $sentence['from'] ?? null,
+                        ':from_who' => $sentence['from_who'] ?? null,
+                        ':creator' => $sentence['creator'] ?? null,
+                        ':creator_uid' => $sentence['creator_uid'] ?? 0,
+                        ':reviewer' => $sentence['reviewer'] ?? 0,
+                        ':commit_from' => $sentence['commit_from'] ?? null,
+                        ':created_at' => ($sentence['created_at'] && is_numeric($sentence['created_at']) && $sentence['created_at'] > 0 && $sentence['created_at'] < 2147483647) ? date('Y-m-d H:i:s', $sentence['created_at']) : '1970-01-01 00:00:00',
+                        ':length' => $sentence['length'] ?? 0
+                    ]);
+                    
+                    $imported++;
                 }
-            }
-
-            // 处理剩余数据
-            if (!empty($batchData)) {
-                $values = [];
-                $params = [];
-                foreach ($batchData as $i => $data) {
-                    $values[] = "(:uuid{$i}, :hitokoto{$i}, :category_id{$i}, :from{$i}, :from_who{$i}, :creator{$i}, :creator_uid{$i}, :reviewer{$i}, :commit_from{$i}, :created_at{$i}, :length{$i})";
-                    foreach ($data as $key => $value) {
-                        $params[":{$key}{$i}"] = $value;
-                    }
-                }
-
-                $stmt = $pdo->prepare("INSERT INTO sentences (
-                    uuid, hitokoto, category_id, `from`, from_who, creator, creator_uid,
-                    reviewer, commit_from, created_at, length
-                ) VALUES " . implode(', ', $values));
-                $stmt->execute($params);
-
-                $imported += count($batchData);
-                $batchData = [];
-            }
-
-            $pdo->commit();
+                
+                // 每批处理完成后更新进度
+                $current = $imported + $skipped;
+                $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
+                echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)，批次: $currentBatch');</script>";
+                ob_flush();
+                flush();
+                
+                // 短暂休眠，避免服务器过载
+                usleep(100000); // 100ms
             }
         }
         
