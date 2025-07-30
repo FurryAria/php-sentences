@@ -1,4 +1,12 @@
 <?php
+// 安装锁定机制
+$lockFile = __DIR__ . '/installed.lock';
+
+// 检查是否已安装
+if (file_exists($lockFile)) {
+    die('系统已安装，如需重新安装，请删除installed.lock文件');
+}
+
 // 处理表单提交
 $message = '';
 $config = require 'config.php';
@@ -94,6 +102,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         $message = "安装成功！导入了 {$imported} 条记录，跳过了 {$skipped} 条已存在记录。";
+        
+        // 创建安装锁定文件
+        file_put_contents($lockFile, date('Y-m-d H:i:s'));
     } catch (PDOException $e) {
         $message = "数据库错误: " . $e->getMessage();
     }
