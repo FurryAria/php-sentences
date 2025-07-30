@@ -56,6 +56,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $imported = 0;
         $skipped = 0;
         
+        // 计算总句子数
+        $totalSentences = 0;
+        foreach ($sentenceFiles as $file) {
+            $jsonContent = file_get_contents($file);
+            $tempSentences = json_decode($jsonContent, true);
+            if (is_array($tempSentences)) {
+                $totalSentences += count($tempSentences);
+            }
+        }
+        
+        // 输出进度容器
+        echo '<div id="progress-container" style="width: 100%; background-color: #f3f3f3; margin: 20px 0; border-radius: 4px;">
+            <div id="progress-bar" style="width: 0%; height: 30px; background-color: #4CAF50; border-radius: 4px; transition: width 0.3s ease;"></div>
+        </div>
+        <div id="progress-text" style="text-align: center; margin: 10px 0;">准备开始...</div>
+        <script>
+            function updateProgress(percent, text) {
+                document.getElementById("progress-bar").style.width = percent + "%";
+                document.getElementById("progress-text").textContent = text;
+            }
+        </script>';
+        ob_flush();
+        flush();
+        
         foreach ($sentenceFiles as $file) {
             $jsonContent = file_get_contents($file);
             $sentences = json_decode($jsonContent, true);
@@ -71,6 +95,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([':uuid' => $sentence['uuid']]);
                 if ($stmt->fetch()) {
                     $skipped++;
+                    
+                    // 更新进度
+                    $current = $imported + $skipped;
+                    $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
+                    echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)');</script>";
+                    ob_flush();
+                    flush();
                     continue;
                 }
                 
@@ -93,15 +124,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':creator_uid' => $sentence['creator_uid'] ?? 0,
                     ':reviewer' => $sentence['reviewer'] ?? 0,
                     ':commit_from' => $sentence['commit_from'] ?? null,
-                    ':created_at' => $sentence['created_at'] ? date('Y-m-d H:i:s', $sentence['created_at']) : null,
+                    ':created_at' => ($sentence['created_at'] && is_numeric($sentence['created_at']) && $sentence['created_at'] > 0 && $sentence['created_at'] < 2147483647) ? date('Y-m-d H:i:s', $sentence['created_at']) : '1970-01-01 00:00:00',
                     ':length' => $sentence['length'] ?? 0
                 ]);
                 
                 $imported++;
+                    
+                    // 更新进度
+                    $current = $imported + $skipped;
+                    $percent = $totalSentences > 0 ? round(($current / $totalSentences) * 100, 2) : 0;
+                    echo "<script>updateProgress($percent, '已处理 $current/$totalSentences 条记录 (导入: $imported, 跳过: $skipped)');</script>";
+                    ob_flush();
+                    flush();
             }
         }
         
         $message = "安装成功！导入了 {$imported} 条记录，跳过了 {$skipped} 条已存在记录。";
+        
+        // 更新最终进度
+        echo "<script>updateProgress(100, '导入完成！共处理 {$totalSentences} 条记录 (导入: {$imported}, 跳过: {$skipped})');</script>";
+        ob_flush();
+        flush();
         
         // 创建安装锁定文件
         file_put_contents($lockFile, date('Y-m-d H:i:s'));
